@@ -29,6 +29,7 @@
         modules = 
         [
           ./home/home.nix
+          ./modules/watchtower.nix
           {
             home = 
             {
