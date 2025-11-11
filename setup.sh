@@ -1,11 +1,22 @@
 #!/bin/bash
 
-# This script is designed to set up a Raspberry Pi.
-# It should be run with root privileges (e.g., "sudo ./raspberry_pi_setup.sh")
-# Using "set -e" to exit immediately if any command fails.
-set -e
+# This script is designed to set up a Raspberry Pi for production use.
+# It MUST be run with root privileges (e.g., "sudo ./raspberry_pi_setup.sh")
+#
+# set -e : Exit immediately if a command exits with a non-zero status.
+# set -u : Treat unset variables as an error when substituting.
+# set -o pipefail : The return value of a pipeline is the status of
+#                   the last command to exit with a non-zero status,
+#                   or zero if no command exited with a non-zero status.
+set -euo pipefail
 
-echo "--- [Step 1/5] Starting Full System Update & Upgrade ---"
+# --- [Step 0/6] Root User Check ---
+if [ "$EUID" -ne 0 ]; then
+  echo "!!! This script must be run as root (with sudo). Exiting. !!!"
+  exit 1
+fi
+
+echo "--- [Step 1/6] Starting Full System Update & Upgrade ---"
 # This updates the package lists and upgrades all installed packages.
 # This also updates the Raspberry Pi firmware to the latest stable version.
 apt update
@@ -13,39 +24,60 @@ apt upgrade -y
 echo "--- System update complete. ---"
 echo ""
 
-echo "--- [Step 2/5] Installing Nix Package Manager (Daemon) ---"
+echo "--- [Step 2/6] Installing Nix Package Manager (Daemon) ---"
 # This runs the official installer script for Nix in daemon (multi-user) mode.
-# We pipe the curl download directly into sh, which is more compatible.
+# We pipe the curl download directly into sh.
 curl --proto '=https' --tlsv1.2 -L https://nixos.org/nix/install | sh -s -- --daemon
 echo "--- Nix installation complete. ---"
-echo "NOTE: You may need to source the nix script (e.g., . /home/$USER/.nix-profile/etc/profile.d/nix.sh) or restart your shell after this script."
 echo ""
 
-echo "--- [Step 3/5] Enabling Automatic Security Updates ---"
-# This installs and configures 'unattended-upgrades' to automatically
-# apply security updates in the background.
-apt install unattended-upgrades -y
-dpkg-reconfigure -plow unattended-upgrades
-echo "--- Automatic updates enabled. ---"
-echo ""
+echo "--- [Step 3/6] Configuring Nix for Flakes ---"
+# This enables experimental features like flakes, which are
+# essential for modern Nix-based dataloggers.
+NIX_CONF_FILE="/etc/nix/nix.conf"
+NIX_CONF_LINE="experimental-features = nix-command flakes"
 
-echo "--- [Step 4/5] Enabling User Services on Boot (Linger) ---"
-# This allows systemd user services (like those Nix may create)
-# to start at boot, even before a user logs in.
+# Ensure the directory and file exist
+mkdir -p /etc/nix
+touch "$NIX_CONF_FILE"
 
-# We need to know WHICH user to enable this for.
-read -p "Please enter the username to enable boot services for (e.g., 'pi' or 'admin'): " linger_user
-
-if [ -z "$linger_user" ]; then
-    echo "No username provided. Skipping this step."
-    echo "You can run 'sudo loginctl enable-linger <username>' manually later."
+# Append the line only if it doesn't already exist
+if ! grep -qF "$NIX_CONF_LINE" "$NIX_CONF_FILE"; then
+    echo "Adding '$NIX_CONF_LINE' to $NIX_CONF_FILE..."
+    echo "$NIX_CONF_LINE" >> "$NIX_CONF_FILE"
+    echo "--- Nix configuration updated. ---"
 else
-    loginctl enable-linger "$linger_user"
-    echo "--- User services (linger) enabled for '$linger_user'. ---"
+    echo "--- Nix configuration already set for flakes. Skipping. ---"
 fi
 echo ""
 
-echo "--- [Step 5/5] Setup Complete. Rebooting... ---"
+
+echo "--- [Step 5/6] Enabling User Services on Boot (Linger) ---"
+# This allows systemd user services (like those Nix may create)
+# to start at boot, even before a user logs in.
+# We will automatically use the user who invoked 'sudo' ($SUDO_USER).
+
+# Check if $SUDO_USER is set and not empty
+if [ -z "$SUDO_USER" ]; then
+    echo "!!! Could not find \$SUDO_USER. Skipping linger step. !!!"
+    echo "Please run 'sudo loginctl enable-linger <username>' manually after reboot."
+# Check if the user is 'root' - we don't want to linger root.
+elif [ "$SUDO_USER" == "root" ]; then
+    echo "!!! Script was run by root directly, not via sudo. Skipping linger step. !!!"
+    echo "Please run 'sudo loginctl enable-linger <username>' manually after reboot."
+# Check if the user actually exists (pre-flight check)
+elif id -u "$SUDO_USER" >/dev/null 2>&1; then
+    echo "--- Automatically enabling linger for user '$SUDO_USER'... ---"
+    loginctl enable-linger "$SUDO_USER"
+    echo "--- User services (linger) enabled for '$SUDO_USER'. ---"
+else
+    # This case should rarely happen if sudo is set up correctly
+    echo "!!! User '$SUDO_USER' does not seem to exist. Skipping linger step. !!!"
+    echo "Please run 'sudo loginctl enable-linger <username>' manually after reboot."
+fi
+echo ""
+
+echo "--- [Step 6/6] Setup Complete. Rebooting... ---"
 echo "The system will reboot in 10 seconds. Press Ctrl+C to cancel."
 sleep 10
 reboot
