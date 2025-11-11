@@ -16,11 +16,9 @@
       system = "aarch64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
       
-      # Define the username in one place
       username = "datalogger";
     in
     {
-      # Use the username variable as the attribute key for the configuration
       homeConfigurations.${username} = home-manager.lib.homeManagerConfiguration 
       {
         inherit pkgs;
@@ -33,10 +31,11 @@
           {
             home = 
             {
-              # Use the username variable for the mandatory option
-              # This 'inherit' is shorthand for 'username = username;'
               inherit username; 
               
+              # Explicitly set the home directory to resolve the error.
+              homeDirectory = "/home/${username}";
+
               stateVersion = "25.05"; 
             };
 
