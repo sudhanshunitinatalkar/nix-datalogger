@@ -32,8 +32,12 @@
           {
             home = 
             {
-              username = "datalogger";
-              homeDirectory = "/home/datalogger";
+              # 'username' is correctly inferred from the
+              # `homeConfigurations."datalogger"` attribute key.
+              
+              # 'homeDirectory' correctly defaults to "/home/${home.username}",
+              # which will be "/home/datalogger".
+
               stateVersion = "25.05"; # Update this to match your install time
             };
 
