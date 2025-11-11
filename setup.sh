@@ -15,8 +15,8 @@ echo ""
 
 echo "--- [Step 2/5] Installing Nix Package Manager (Daemon) ---"
 # This runs the official installer script for Nix in daemon (multi-user) mode.
-# The installer may ask you for input or confirmation.
-sh <(curl --proto '=https' --tlsv1.2 -L https://nixos.org/nix/install) --daemon
+# We pipe the curl download directly into sh, which is more compatible.
+curl --proto '=https' --tlsv1.2 -L https://nixos.org/nix/install | sh -s -- --daemon
 echo "--- Nix installation complete. ---"
 echo "NOTE: You may need to source the nix script (e.g., . /home/$USER/.nix-profile/etc/profile.d/nix.sh) or restart your shell after this script."
 echo ""
