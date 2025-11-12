@@ -1,6 +1,10 @@
+# modbus.py
+
 import random
 import json
 import sys
+
+
 
 def readsens(slave_id, function_code, mem_address, number_of_bytes, data_type, scaling_factor):
     
@@ -35,31 +39,37 @@ def readsens(slave_id, function_code, mem_address, number_of_bytes, data_type, s
         return None
     
 
-def readsens_all(filename="cpuid.json"):
+def readsens_all(filename):
     """
     Reads sensor configuration from a JSON file, calls readsens for each,
     and prints the results as a dictionary.
+    
+    --- [UPDATED] ---
+    This function now reads the *entire* config file but only processes
+    the dictionary found under the "sensor_config" key.
     """
     try:
         with open(filename, 'r') as f:
-            sensor_config = json.load(f)
+            full_config = json.load(f)
     except FileNotFoundError:
         print(f"Error: Configuration file '{filename}' not found.", file=sys.stderr)
-        return
+        return None # Return None on error
     except json.JSONDecodeError:
         print(f"Error: Could not decode JSON from '{filename}'. Check file format.", file=sys.stderr)
-        return
+        return None # Return None on error
     except Exception as e:
         print(f"An error occurred opening or reading '{filename}': {e}", file=sys.stderr)
-        return
+        return None # Return None on error
 
     sensor_readings = {}
     
-    if not isinstance(sensor_config, dict):
-        print(f"Error: JSON content in '{filename}' is not a dictionary of sensors.", file=sys.stderr)
-        return
+    # --- [NEW] Check for the "sensor_config" key ---
+    if "sensor_config" not in full_config or not isinstance(full_config["sensor_config"], dict):
+        print(f"Error: JSON file '{filename}' is missing a 'sensor_config' dictionary.", file=sys.stderr)
+        return None
 
-    # Iterate through each sensor defined in the JSON
+    # --- [UPDATED] Iterate over the "sensor_config" key, not the whole file ---
+    sensor_config = full_config["sensor_config"]
     for sensor_name, params in sensor_config.items():
         try:
             # Use keyword argument unpacking (**) to pass the dictionary
@@ -74,8 +84,11 @@ def readsens_all(filename="cpuid.json"):
             # Catch any other errors during the read
             print(f"Error reading sensor '{sensor_name}': {e}", file=sys.stderr)
 
-    # Print the final dictionary of readings, as requested
-    print(sensor_readings)
+    # Return the final dictionary of readings
+    return sensor_readings
+
+
 
 if __name__ == "__main__":
-    readsens_all(filename="testid.json")
+    # Update the test to use the new config file name
+    print(readsens_all("testid.json"))

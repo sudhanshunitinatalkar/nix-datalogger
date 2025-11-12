@@ -1,4 +1,27 @@
 {
+    "device_info": {
+        "device_id": "REPLACE_WITH_CPUID",
+        "location": "Main Factory Floor"
+    },
+    "datalogger_settings": {
+        "polling_interval_seconds": 5
+    },
+    "database": {
+        "db_path": "/var/lib/datalogger/readings.db",
+        "maintenance_rows_to_delete": 5000
+    },
+    "system_health": {
+        "min_free_space_bytes": 104857600
+    },
+    "modbus_connection": {
+        "port": "/dev/ttyAMA0",
+        "baudrate": 9600,
+        "parity": "N",
+        "stopbits": 1,
+        "bytesize": 8,
+        "timeout_seconds": 1.5
+    },
+    "sensor_config": {
         "temperature_sensor": {
             "slave_id": 1,
             "function_code": 3,
@@ -24,3 +47,4 @@
             "scaling_factor": 1.0
         }
     }
+}
