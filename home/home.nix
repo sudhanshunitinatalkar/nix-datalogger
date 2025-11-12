@@ -23,7 +23,10 @@
 
     python3
     python3Packages.pymodbus
-    
+    python3Packages.requests
+    python3Packages.paho-mqtt
+    python3Packages.requests
+
 
   ];
 

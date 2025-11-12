@@ -164,7 +164,34 @@ else
 fi
 echo ""
 
-echo "--- [Step 10/11] Setup Complete. Rebooting... ---"
+# --- [NEW STEP] ---
+echo "--- [Step 10/11] Creating Datalogger Data Directory ---"
+# This creates the persistent data directory and assigns ownership
+# to the non-root user who will run the datalogger application.
+DATALOGGER_DIR="/var/lib/datalogger"
+
+# We re-use the logic from Step 7 to find the correct user
+if [ -z "$SUDO_USER" ]; then
+    echo "!!! Could not find \$SUDO_USER. Skipping data directory creation. !!!"
+    echo "Please run 'sudo mkdir -p $DATALOGGER_DIR && sudo chown <user>:<user> $DATALOGGER_DIR' manually."
+elif [ "$SUDO_USER" = "root" ]; then
+    echo "!!! Script was run by root directly, not via sudo. Skipping data directory creation. !!!"
+    echo "Please run 'sudo mkdir -p $DATALOGGER_DIR && sudo chown <user>:<user> $DATALOGGER_DIR' manually."
+elif id -u "$SUDO_USER" >/dev/null 2>&1; then
+    echo "--- Creating directory '$DATALOGGER_DIR' for user '$SUDO_USER'... ---"
+    mkdir -p "$DATALOGGER_DIR"
+    # Set the owner and group to be the sudo user
+    chown "$SUDO_USER":"$SUDO_USER" "$DATALOGGER_DIR"
+    echo "--- Datalogger data directory created and permissions set. ---"
+else
+    echo "!!! User '$SUDO_USER' does not seem to exist. Skipping data directory creation. !!!"
+    echo "Please run 'sudo mkdir -p $DATALOGGER_DIR && sudo chown <user>:<user> $DATALOGGER_DIR' manually."
+fi
+echo ""
+# --- [END NEW STEP] ---
+
+
+echo "--- [Step 11/11] Setup Complete. Rebooting... ---"
 # The final reboot is required to apply firmware, hardware, and service changes.
 echo "The system will reboot in 10 seconds. Press Ctrl+C to cancel."
 sleep 10
