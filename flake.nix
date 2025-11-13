@@ -32,10 +32,8 @@
             home = 
             {
               inherit username; 
-              
               # Explicitly set the home directory to resolve the error.
               homeDirectory = "/home/${username}";
-
               stateVersion = "25.05"; 
             };
 
