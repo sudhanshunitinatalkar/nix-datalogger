@@ -1,13 +1,7 @@
 #!/bin/bash
-
 # This script is designed to set up a Raspberry Pi for production datalogger use.
 # It MUST be run with root privileges (e.g., "sudo ./raspberry_pi_setup.sh")
 #
-# set -e : Exit immediately if a command exits with a non-zero status.
-# set -u : Treat unset variables as an error when substituting.
-# set -o pipefail : The return value of a pipeline is the status of
-#                   the last command to exit with a non-zero status,
-#                   or zero if no command exited with a non-zero status.
 set -euo pipefail
 
 # --- [Step 0/11] Root User Check ---
@@ -17,14 +11,12 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 echo "--- [Step 1/11] Starting Full System Update & Upgrade ---"
-# This updates the package lists and upgrades all installed packages.
 apt update
 apt upgrade -y
 echo "--- System update complete. ---"
 echo ""
 
 echo "--- [Step 2/11] Applying Raspberry Pi EEPROM Firmware Updates ---"
-# This attempts to apply any pending bootloader/EEPROM firmware updates.
 if command -v rpi-eeprom-update >/dev/null 2>&1; then
   echo "Found rpi-eeprom-update. Applying any pending firmware updates..."
   rpi-eeprom-update -a
@@ -58,7 +50,6 @@ NIX_CONF_FILE="/etc/nix/nix.conf"
 NIX_CONF_LINE="experimental-features = nix-command flakes"
 mkdir -p /etc/nix
 touch "$NIX_CONF_FILE"
-
 if ! grep -qF "$NIX_CONF_LINE" "$NIX_CONF_FILE"; then
     echo "Adding '$NIX_CONF_LINE' to $NIX_CONF_FILE..."
     echo "$NIX_CONF_LINE" >> "$NIX_CONF_FILE"
@@ -102,25 +93,34 @@ else
 fi
 echo ""
 
-echo "--- [Step 9/11] Configuring /boot/firmware/config.txt ---"
-# This step handles hardware watchdog, UART enablement, and Bluetooth disabling.
-CONFIG_FILE="/boot/firmware/config.txt"
+# === NEW STEP: Add the invoking user to dialout group for serial port access ===
+echo "--- [Step 8.5/11] Adding user to dialout group (serial port access) ---"
+if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = "root" ]; then
+    echo "!!! Cannot determine the original user. Skipping dialout group addition. !!!"
+elif id -u "$SUDO_USER" >/dev/null 2>&1; then
+    if groups "$SUDO_USER" | grep -q '\bdialout\b'; then
+        echo "--- User '$SUDO_USER' is already in the dialout group. ---"
+    else
+        echo "--- Adding user '$SUDO_USER' to the dialout group... ---"
+        usermod -a -G dialout "$SUDO_USER"
+        echo "--- User '$SUDO_USER' added to dialout. They will have serial access after next login/reboot. ---"
+    fi
+else
+    echo "!!! User '$SUDO_USER' does not exist. Skipping dialout group step. !!!"
+fi
+echo ""
 
-# List of settings to apply
+echo "--- [Step 9/11] Configuring /boot/firmware/config.txt ---"
+CONFIG_FILE="/boot/firmware/config.txt"
 SETTINGS=(
     "dtparam=watchdog=on"
     "enable_uart=1"
     "dtoverlay=disable-bt"
 )
-
 if [ -f "$CONFIG_FILE" ]; then
     echo "Backing up config.txt to config.txt.bak..."
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
-
-    # Ensure there is a newline at the end of the file before we start appending
-    # This prevents appending to the end of an existing line
     sed -i -e '$a\' "$CONFIG_FILE"
-
     for setting in "${SETTINGS[@]}"; do
         if ! grep -qF "$setting" "$CONFIG_FILE"; then
             echo "Adding '$setting' to $CONFIG_FILE..."
@@ -137,7 +137,6 @@ echo ""
 
 echo "--- [Step 10/11] Creating Datalogger Data Directory ---"
 DATALOGGER_DIR="/var/lib/datalogger"
-
 if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = "root" ]; then
     echo "!!! Cannot determine correct user. Skipping data directory creation. !!!"
 elif id -u "$SUDO_USER" >/dev/null 2>&1; then
