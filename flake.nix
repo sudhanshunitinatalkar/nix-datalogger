@@ -16,7 +16,7 @@
       system = "aarch64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
       
-      username = "datalogger";
+      username = "datalog";
     in
     {
       homeConfigurations.${username} = home-manager.lib.homeManagerConfiguration 
