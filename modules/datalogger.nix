@@ -1,11 +1,18 @@
 { config, pkgs, lib, ... }:
 
 let
-  # Configuration
-  repoUrl = "https://github.com/sudhanshunitinatalkar/datalogger-bin.git";
+  # --- Configuration ---
+  
+  # 1. Target Directory for Binaries
   targetDir = "${config.home.homeDirectory}/datalogger-bin";
+  
+  # 2. Release URL
+  # Assumes you upload a file named 'datalogger-suite.zip' to GitHub Releases
+  repoOwner = "sudhanshunitinatalkar";
+  repoName = "datalogger-bin";
+  releaseUrl = "https://github.com/${repoOwner}/${repoName}/releases/latest/download/datalogger-suite.zip";
 
-  # List of all binaries to run as services
+  # 3. Service Names (Binaries to run)
   serviceNames = [ 
     "configure" 
     "cpcb" 
@@ -16,97 +23,133 @@ let
     "saicloud" 
   ];
 
-  # Helper function to define a standard robust service
+  # --- Service Generator ---
   mkDataloggerService = name: {
     Unit = {
       Description = "Datalogger Service: ${name}";
-      # Start after network and the updater
       After = [ "network-online.target" "datalogger-updater.service" ];
       Wants = [ "network-online.target" ];
     };
 
     Service = {
-      # Points to the mutable binary in the home directory
+      # Path to the binary
       ExecStart = "${targetDir}/bin/${name}";
-      # Robustness settings: Always restart on crash/exit
+      
+      # Restart Policy
       Restart = "always";
       RestartSec = "5s";
       StartLimitIntervalSec = "60";
       StartLimitBurst = "5";
+
+      # [CRITICAL] TMPDIR Handling for Standalone Binaries
+      # 1. Tell PyInstaller to unpack in a persistent directory in $HOME (%h)
+      Environment = "TMPDIR=%h/datalogger-tmp";
       
+      # 2. Ensure this directory exists before the binary launches
+      ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p %h/datalogger-tmp";
+
       # Logging
       StandardOutput = "journal";
       StandardError = "journal";
     };
+
     Install = {
       WantedBy = [ "default.target" ];
     };
   };
+
 in
 {
-  # 1. MERGED SERVICES DEFINITION
-  # We define the updater explicitly and merge (//) it with the generated list
+  # --- 1. Updater Service ---
+  # Downloads the zip, extracts it, and restarts services if successful.
   systemd.user.services = {
     datalogger-updater = {
       Unit = {
-        Description = "Fetch datalogger binaries from Git and update if changed";
+        Description = "Fetch datalogger binaries from GitHub Releases";
         After = [ "network-online.target" ];
         Wants = [ "network-online.target" ];
       };
+
       Service = {
         Type = "oneshot";
-        # Script to handle cloning, updating, and restarting services
+        
         ExecStart = pkgs.writeShellScript "update-datalogger" ''
-          export PATH=${lib.makeBinPath [ pkgs.git pkgs.openssh pkgs.systemd ]}:$PATH
+          # Add tools to PATH
+          export PATH=${lib.makeBinPath [ pkgs.curl pkgs.unzip pkgs.systemd pkgs.coreutils ]}:$PATH
           
-          TARGET="${targetDir}"
-          SERVICES="${lib.concatStringsSep " " serviceNames}"
+          TARGET_BASE="${targetDir}"
+          TARGET_BIN="$TARGET_BASE/bin"
+          TEMP_DIR=$(mktemp -d)
+          ZIP_FILE="$TEMP_DIR/update.zip"
           
-          # Ensure the directory exists
-          if [ ! -d "$TARGET/.git" ]; then
-            echo "Cloning repository..."
-            rm -rf "$TARGET" # Clean up if partial
-            git clone ${repoUrl} "$TARGET"
-            chmod +x "$TARGET/bin/"*
-          else
-            cd "$TARGET"
-            
-            # Fetch changes without merging yet
-            git remote update
-            
-            # Check if local is behind remote
-            UPSTREAM='@{u}'
-            LOCAL=$(git rev-parse @)
-            REMOTE=$(git rev-parse "$UPSTREAM")
-            
-            if [ "$LOCAL" != "$REMOTE" ]; then
-              echo "Updates detected. Pulling changes..."
-              git pull
-              
-              echo "Ensuring binaries are executable..."
-              chmod +x bin/*
-              
-              echo "Restarting application services..."
-    
-              # Restart all services to apply the new binaries
-              systemctl --user restart $SERVICES
-            else
-              echo "No updates found. System is up to date."
+          echo "--- Starting Update Process ---"
+          echo "Release URL: ${releaseUrl}"
+          
+          # 1. Download the Zip
+          # -L: Follow redirects (needed for GitHub releases)
+          # -f: Fail silently on HTTP errors (404, etc)
+          if curl -L -f -o "$ZIP_FILE" "${releaseUrl}"; then
+            echo "Download successful."
+
+            # 2. Verify it is a valid zip
+            if ! unzip -t "$ZIP_FILE" > /dev/null; then
+              echo "Error: File is not a valid zip archive."
+              rm -rf "$TEMP_DIR"
+              exit 1
             fi
+
+            # 3. Prepare Target Directory
+            mkdir -p "$TARGET_BIN"
+
+            # 4. Extract to Temp
+            echo "Extracting..."
+            unzip -o "$ZIP_FILE" -d "$TEMP_DIR/extracted"
+
+            # 5. Install Binaries
+            # We look for files matching our service names inside the zip (flattening folders)
+            SERVICES="${lib.concatStringsSep " " serviceNames}"
+            
+            for svc in $SERVICES; do
+              # Find the file anywhere in the extracted zip
+              FOUND_FILE=$(find "$TEMP_DIR/extracted" -name "$svc" -type f | head -n 1)
+              
+              if [ -n "$FOUND_FILE" ]; then
+                echo "Installing: $svc"
+                cp -f "$FOUND_FILE" "$TARGET_BIN/$svc"
+                chmod +x "$TARGET_BIN/$svc"
+              else
+                echo "Warning: Binary '$svc' not found in zip package."
+              fi
+            done
+            
+            # 6. Cleanup
+            rm -rf "$TEMP_DIR"
+
+            # 7. Restart Services to apply new binaries
+            echo "Restarting application services..."
+            systemctl --user restart $SERVICES
+            echo "Update Complete."
+
+          else
+            echo "Failed to download update. Server returned error or no internet."
+            rm -rf "$TEMP_DIR"
+            exit 1
           fi
         '';
       };
     };
-  } // (lib.genAttrs serviceNames mkDataloggerService);
+  } 
+  # Merge with the generated service definitions
+  // (lib.genAttrs serviceNames mkDataloggerService);
 
-  # 2. THE TIMER (Triggers the updater every 5 minutes)
+
+  # --- 2. Timer (Auto-Update) ---
   systemd.user.timers.datalogger-updater = {
     Unit = {
-      Description = "Run datalogger updater every 5 minutes";
+      Description = "Check for datalogger updates every 5 minutes";
     };
     Timer = {
       OnBootSec = "1m";
-      # Run every 5 mins thereafter
       OnUnitActiveSec = "5m";
     };
     Install = {
