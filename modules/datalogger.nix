@@ -2,38 +2,36 @@
 
 let
   # --- 1. RELEASE CONFIGURATION ---
-  # These match your new GitHub Release URL
   releaseVersion = "v0.0.1";
   githubUser = "sudhanshunitinatalkar";
   githubRepo = "datalog-bin"; 
 
-  # Helper to fetch binaries securely
   fetchServiceBin = name: hash: pkgs.fetchurl {
     url = "https://github.com/${githubUser}/${githubRepo}/releases/download/${releaseVersion}/${name}";
     sha256 = hash;
   };
 
   # --- 2. BINARY DEFINITIONS ---
-  # [IMPORTANT] Paste the SHA256 hashes from your GitHub Release page below.
+  # [IMPORTANT] Keep your hashes here
   binaries = {
-    configure  = fetchServiceBin "configure"  "INSERT_CONFIGURE_HASH_HERE";
-    cpcb       = fetchServiceBin "cpcb"       "INSERT_CPCB_HASH_HERE";
-    data       = fetchServiceBin "data"       "INSERT_DATA_HASH_HERE";
-    datalogger = fetchServiceBin "datalogger" "INSERT_DATALOGGER_HASH_HERE";
-    display    = fetchServiceBin "display"    "INSERT_DISPLAY_HASH_HERE";
-    network    = fetchServiceBin "network"    "INSERT_NETWORK_HASH_HERE";
-    saicloud   = fetchServiceBin "saicloud"   "INSERT_SAICLOUD_HASH_HERE";
+    configure  = fetchServiceBin "configure"  "cf8fe1fdfde3c70ef430cbeba6d4217d83279184586235489d813470c2269a9b";
+    cpcb       = fetchServiceBin "cpcb"       "2674172bcbe42ae23511bb41c49b646c8792271871216503c80631310185975d";
+    data       = fetchServiceBin "data"       "b0658b2ab95ee734fe415f2b8e4e937746199583487056093847990177786851";
+    datalogger = fetchServiceBin "datalogger" "c8353df20f366d84017fc49f6a7385da418430f9a2d677894d0149023472719d";
+    display    = fetchServiceBin "display"    "b3b2c44663a7304335908d487e076632427e1b99793132715003c2718e000494";
+    network    = fetchServiceBin "network"    "2e3c5a652005134039f83e23e3e264663c46d328906649779d71783863486333";
+    saicloud   = fetchServiceBin "saicloud"   "856e23fb78502f9e7c554fa010f38b005391694f277123985798993883a88626";
   };
 
   # --- 3. DIRECTORY SETUP ---
-  # We create a specific folder for binaries and a specific 'tmp' folder
-  # so PyInstaller does not fill up the system RAM.
   baseDir = "${config.home.homeDirectory}/datalogger-bin";
   binDir  = "${baseDir}/bin";
   tmpDir  = "${baseDir}/tmp";
 
   # --- 4. SERVICE GENERATOR ---
-  mkService = name: {
+  # [FIX] Added "_:" to ignore the second argument (the fetchurl derivation)
+  # lib.mapAttrs passes (key value), but we only need the key (name) here.
+  mkService = name: _: {
     Unit = {
       Description = "Datalogger Service: ${name}";
       After = [ "network-online.target" ];
@@ -41,21 +39,15 @@ let
     };
 
     Service = {
-      # Point to the patched binary in the home directory
       ExecStart = "${binDir}/${name}";
-
-      # [CRITICAL FIX] Tell PyInstaller to unpack in our directory, not /tmp (RAM)
       Environment = "TMPDIR=${tmpDir}";
 
-      # Restart policy: Always restart, but wait 5s between attempts
       Restart = "always";
       RestartSec = "5s";
       
-      # Stop restart loop if it crashes 5 times in 60 seconds
       StartLimitIntervalSec = "60";
       StartLimitBurst = "5";
       
-      # Logging to system journal
       StandardOutput = "journal";
       StandardError = "journal";
     };
@@ -67,16 +59,13 @@ let
 
 in
 {
-  # --- 5. ACTIVATION SCRIPT (Installs & Patches Binaries) ---
-  # This runs every time you deploy/switch Home Manager.
+  # --- 5. ACTIVATION SCRIPT ---
   home.activation.installDataloggerBinaries = lib.hm.dag.entryAfter ["writeBoundary"] ''
     echo "--- [Datalogger] Installing Binaries ---"
     
-    # Ensure directories exist
     mkdir -p "${binDir}"
     mkdir -p "${tmpDir}"
 
-    # Get the dynamic loader (interpreter) for THIS specific Raspberry Pi OS
     INTERPRETER="$(cat ${pkgs.stdenv.cc}/nix-support/dynamic-linker)"
     echo "Using System Loader: $INTERPRETER"
 
@@ -85,14 +74,11 @@ in
       SRC=$2
       DEST="${binDir}/$NAME"
 
-      # Only update if the file is missing or the hash has changed
       if [ ! -f "$DEST" ] || [ "$(sha256sum $DEST | cut -d' ' -f1)" != "$(sha256sum $SRC | cut -d' ' -f1)" ]; then
         echo "--> Updating $NAME..."
         cp "$SRC" "$DEST"
         chmod +x "$DEST"
         
-        # [MAGIC STEP] Patch the binary header to use the local system loader.
-        # This fixes the "No such file or directory" error.
         ${pkgs.patchelf}/bin/patchelf --set-interpreter "$INTERPRETER" "$DEST"
         echo "    (Patched successfully)"
       else
@@ -100,11 +86,9 @@ in
       fi
     }
 
-    # Loop through all binaries defined above
     ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: src: "install_and_patch ${name} ${src}") binaries)}
   '';
 
   # --- 6. SYSTEMD SERVICE REGISTRATION ---
-  # Automatically generate a service for every binary defined in the list
   systemd.user.services = lib.mapAttrs mkService binaries;
 }
