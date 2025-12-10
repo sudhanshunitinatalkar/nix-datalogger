@@ -1,20 +1,49 @@
 { config, pkgs, lib, ... }:
 
 let
-  # --- Configuration ---
+  # 1. Configuration: Version and Source
+  version = "0.0.1";
   
-  # 1. Target Directory for Binaries
-  targetDir = "${config.home.homeDirectory}/datalogger-bin";
+  # 2. Package Definition
+  # This downloads the zip and patches binaries for NixOS compatibility
+  dataloggerBin = pkgs.stdenv.mkDerivation {
+    pname = "datalogger-services";
+    inherit version;
 
-  # 2. Release URL (datalog-bin v0.0.1)
-  repoOwner = "sudhanshunitinatalkar";
-  repoName = "datalog-bin"; 
-  releaseTag = "v0.0.1";
-  zipName = "release.zip";
-  releaseUrl = "https://github.com/${repoOwner}/${repoName}/releases/download/${releaseTag}/${zipName}";
+    src = pkgs.fetchzip {
+      url = "https://github.com/sudhanshunitinatalkar/datalog-bin/releases/download/v${version}/release.zip";
+      
+      # [IMPORTANT] REPLACE THIS WITH THE HASH FROM: nix-prefetch-url --unpack <url>
+      sha256 = "16xifrxdxan4sf558s22d5ki96440xvn9q6xwh7ci3yyan18qbl7"; 
+      
+      # We manually handle the folder structure to be safe
+      stripRoot = false;
+    };
 
-  # 3. Service Names
-  serviceNames = [ 
+    # Automatically fix binary paths (interpreter/libs) for NixOS
+    nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+
+    # Runtime dependencies (Common libs; add more here if a binary crashes)
+    buildInputs = with pkgs; [
+      stdenv.cc.cc.lib
+      zlib
+      openssl
+    ];
+
+    installPhase = ''
+      mkdir -p $out/bin
+      
+      # Extract from the nested structure: release/datalogger-0.0.1/
+      # We move all binaries directly to $out/bin for easier access
+      cp -r release/datalogger-${version}/* $out/bin/
+      
+      # Ensure they are executable
+      chmod +x $out/bin/*
+    '';
+  };
+
+  # 3. Service List (Ignoring 'diag' as requested)
+  binaryNames = [ 
     "configure" 
     "cpcb" 
     "data" 
@@ -24,100 +53,31 @@ let
     "saicloud" 
   ];
 
-  # --- Service Generator ---
-  mkDataloggerService = name: {
-    Unit = {
-      Description = "Datalogger Service: ${name}";
-      After = [ "network-online.target" "datalogger-updater.service" ];
-      Wants = [ "network-online.target" ];
-    };
-
-    Service = {
-      ExecStart = "${targetDir}/bin/${name}";
-      Restart = "always";
-      RestartSec = "5s";
+  # 4. Service Generator
+  mkService = name: {
+    name = "datalogger-${name}";
+    value = {
+      description = "Datalogger Service: ${name}";
+      wantedBy = [ "multi-user.target" ]; # Runs on boot
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
       
-      # [CRITICAL] Temp folder in Home so binaries can unpack themselves
-      Environment = "TMPDIR=%h/datalogger-tmp";
-      ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p %h/datalogger-tmp";
-
-      StandardOutput = "journal";
-      StandardError = "journal";
-    };
-
-    Install = {
-      WantedBy = [ "default.target" ];
+      serviceConfig = {
+        # Points directly to the patched binary in the Nix store
+        ExecStart = "${dataloggerBin}/bin/${name}";
+        
+        # Crash recovery
+        Restart = "always";
+        RestartSec = "5s";
+        
+        # Run as root (System Service)
+        User = "root";
+      };
     };
   };
 
 in
 {
-  # --- 1. Timer (Auto-Update) ---
-  systemd.user.timers.datalogger-updater = {
-    Unit = { Description = "Check for updates periodically"; };
-    Timer = {
-      OnBootSec = "1m";
-      OnUnitActiveSec = "5m";
-    };
-    Install = { WantedBy = [ "timers.target" ]; };
-  };
-
-  # --- 2. Services (Updater + App Binaries) ---
-  # We define the updater manually, and merge (//) it with the generated services
-  systemd.user.services = {
-    datalogger-updater = {
-      Unit = {
-        Description = "Fetch datalogger binaries";
-        After = [ "network-online.target" ];
-        Wants = [ "network-online.target" ];
-      };
-
-      Service = {
-        Type = "oneshot";
-        ExecStart = pkgs.writeShellScript "update-datalogger" ''
-          export PATH=${lib.makeBinPath [ pkgs.curl pkgs.unzip pkgs.systemd pkgs.coreutils ]}:$PATH
-          
-          TARGET_BIN="${targetDir}/bin"
-          mkdir -p "$TARGET_BIN"
-          
-          # Use a temp folder in HOME for downloading
-          mkdir -p "$HOME/datalogger-update-tmp"
-          TEMP_DIR=$(mktemp -d -p "$HOME/datalogger-update-tmp")
-          ZIP_FILE="$TEMP_DIR/${zipName}"
-          
-          echo "--- Starting Update ---"
-          echo "Downloading from: ${releaseUrl}"
-          
-          if curl -L -f -o "$ZIP_FILE" "${releaseUrl}"; then
-            echo "Download successful. Extracting..."
-            unzip -o "$ZIP_FILE" -d "$TEMP_DIR/extracted"
-
-            # Install binaries
-            SERVICES="${lib.concatStringsSep " " serviceNames}"
-            for svc in $SERVICES; do
-              FOUND_FILE=$(find "$TEMP_DIR/extracted" -name "$svc" -type f | head -n 1)
-              if [ -n "$FOUND_FILE" ]; then
-                echo "Installing $svc..."
-                cp -f "$FOUND_FILE" "$TARGET_BIN/$svc"
-                chmod +x "$TARGET_BIN/$svc"
-              else
-                echo "Warning: $svc not found in zip."
-              fi
-            done
-            
-            rm -rf "$TEMP_DIR"
-            
-            # Restart services to apply changes
-            echo "Restarting services..."
-            systemctl --user restart $SERVICES
-            echo "Done."
-          else
-            echo "Download failed."
-            rm -rf "$TEMP_DIR"
-            exit 1
-          fi
-        '';
-      };
-    };
-  } // (lib.genAttrs serviceNames mkDataloggerService);
+  # Generate all services from the list
+  systemd.services = builtins.listToAttrs (map mkService binaryNames);
 }
