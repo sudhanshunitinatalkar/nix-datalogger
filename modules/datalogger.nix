@@ -1,34 +1,49 @@
 { config, pkgs, lib, ... }:
 
 let
-  # Configuration
-  repoUrl = "https://github.com/sudhanshunitinatalkar/datalogger-bin.git";
-  targetDir = "${config.home.homeDirectory}/datalogger-bin";
+  # --- RELEASE CONFIGURATION ---
+  # Update these when you make a new release on GitHub
+  releaseVersion = "v1.0.0"; 
+  githubUser = "sudhanshunitinatalkar";
+  githubRepo = "datalogger-bin"; 
+  
+  # Fetch binaries (Update hashes after uploading your release!)
+  fetchServiceBin = name: hash: pkgs.fetchurl {
+    url = "https://github.com/${githubUser}/${githubRepo}/releases/download/${releaseVersion}/${name}";
+    sha256 = hash;
+  };
 
-  # List of all binaries to run as services
-  serviceNames = [ 
-    "configure" 
-    "cpcb" 
-    "data" 
-    "datalogger" 
-    "display" 
-    "network" 
-    "saicloud" 
-  ];
+  # Define services and their hashes
+  binaries = {
+    datalogger = fetchServiceBin "datalogger" "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    network    = fetchServiceBin "network"    "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
+    display    = fetchServiceBin "display"    "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=";
+    configure  = fetchServiceBin "configure"  "sha256-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=";
+    saicloud   = fetchServiceBin "saicloud"   "sha256-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE=";
+    cpcb       = fetchServiceBin "cpcb"       "sha256-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=";
+    data       = fetchServiceBin "data"       "sha256-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG=";
+  };
 
-  # Helper function to define a standard robust service
-  mkDataloggerService = name: {
+  # --- DIRECTORY PATHS ---
+  baseDir = "${config.home.homeDirectory}/datalogger-bin";
+  binDir  = "${baseDir}/bin";
+  # [FIX] This is the persistent temp folder in your Home directory
+  tmpDir  = "${baseDir}/tmp";
+
+  # --- SERVICE GENERATOR ---
+  mkService = name: {
     Unit = {
       Description = "Datalogger Service: ${name}";
-      # Start after network and the updater
-      After = [ "network-online.target" "datalogger-updater.service" ];
+      After = [ "network-online.target" ];
       Wants = [ "network-online.target" ];
     };
-
     Service = {
-      # Points to the mutable binary in the home directory
-      ExecStart = "${targetDir}/bin/${name}";
-      # Robustness settings: Always restart on crash/exit
+      ExecStart = "${binDir}/${name}";
+      
+      # [FIX] Force PyInstaller to unpack in home dir instead of /tmp
+      Environment = "TMPDIR=${tmpDir}";
+
+      # Robustness settings
       Restart = "always";
       RestartSec = "5s";
       StartLimitIntervalSec = "60";
@@ -38,79 +53,42 @@ let
       StandardOutput = "journal";
       StandardError = "journal";
     };
-    Install = {
-      WantedBy = [ "default.target" ];
-    };
+    Install = { WantedBy = [ "default.target" ]; };
   };
+
 in
 {
-  # 1. MERGED SERVICES DEFINITION
-  # We define the updater explicitly and merge (//) it with the generated list
-  systemd.user.services = {
-    datalogger-updater = {
-      Unit = {
-        Description = "Fetch datalogger binaries from Git and update if changed";
-        After = [ "network-online.target" ];
-        Wants = [ "network-online.target" ];
-      };
-      Service = {
-        Type = "oneshot";
-        # Script to handle cloning, updating, and restarting services
-        ExecStart = pkgs.writeShellScript "update-datalogger" ''
-          export PATH=${lib.makeBinPath [ pkgs.git pkgs.openssh pkgs.systemd ]}:$PATH
-          
-          TARGET="${targetDir}"
-          SERVICES="${lib.concatStringsSep " " serviceNames}"
-          
-          # Ensure the directory exists
-          if [ ! -d "$TARGET/.git" ]; then
-            echo "Cloning repository..."
-            rm -rf "$TARGET" # Clean up if partial
-            git clone ${repoUrl} "$TARGET"
-            chmod +x "$TARGET/bin/"*
-          else
-            cd "$TARGET"
-            
-            # Fetch changes without merging yet
-            git remote update
-            
-            # Check if local is behind remote
-            UPSTREAM='@{u}'
-            LOCAL=$(git rev-parse @)
-            REMOTE=$(git rev-parse "$UPSTREAM")
-            
-            if [ "$LOCAL" != "$REMOTE" ]; then
-              echo "Updates detected. Pulling changes..."
-              git pull
-              
-              echo "Ensuring binaries are executable..."
-              chmod +x bin/*
-              
-              echo "Restarting application services..."
+  # 1. INSTALLATION SCRIPT
+  # Runs on deployment to setup folders and install binaries
+  home.activation.installDataloggerBinaries = lib.hm.dag.entryAfter ["writeBoundary"] ''
+    echo "--- Installing Datalogger Binaries ---"
     
-              # Restart all services to apply the new binaries
-              systemctl --user restart $SERVICES
-            else
-              echo "No updates found. System is up to date."
-            fi
-          fi
-        '';
-      };
-    };
-  } // (lib.genAttrs serviceNames mkDataloggerService);
+    # [FIX] Ensure the custom temp directory exists
+    mkdir -p "${tmpDir}"
+    mkdir -p "${binDir}"
 
-  # 2. THE TIMER (Triggers the updater every 5 minutes)
-  systemd.user.timers.datalogger-updater = {
-    Unit = {
-      Description = "Run datalogger updater every 5 minutes";
-    };
-    Timer = {
-      OnBootSec = "1m";
-      # Run every 5 mins thereafter
-      OnUnitActiveSec = "5m";
-    };
-    Install = {
-      WantedBy = [ "timers.target" ];
-    };
-  };
+    # Get the system's dynamic loader (required for patching)
+    INTERPRETER="$(cat ${pkgs.stdenv.cc}/nix-support/dynamic-linker)"
+
+    install_bin() {
+      NAME=$1
+      SRC=$2
+      DEST="${binDir}/$NAME"
+
+      # Only copy if file is missing or changed
+      if [ ! -f "$DEST" ] || [ "$(sha256sum $DEST | cut -d' ' -f1)" != "$(sha256sum $SRC | cut -d' ' -f1)" ]; then
+        echo "Updating $NAME..."
+        cp "$SRC" "$DEST"
+        chmod +x "$DEST"
+        
+        # Patch the binary to use this system's loader
+        ${pkgs.patchelf}/bin/patchelf --set-interpreter "$INTERPRETER" "$DEST"
+      fi
+    }
+
+    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: src: "install_bin ${name} ${src}") binaries)}
+  '';
+
+  # 2. SERVICE DEFINITIONS
+  systemd.user.services = lib.mapAttrs mkService binaries;
 }
