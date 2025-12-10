@@ -19,7 +19,6 @@ let
     "cpcb" 
     "data" 
     "datalogger" 
-    "diag"
     "display" 
     "network" 
     "saicloud" 
