@@ -1,44 +1,12 @@
 { config, pkgs, lib, ... }:
 
 let
-  version = "0.0.1";
+  # Configuration
+  repoUrl = "https://github.com/sudhanshunitinatalkar/datalogger-bin.git";
+  targetDir = "${config.home.homeDirectory}/datalogger-bin";
 
-  # 1. Package Definition
-  # Downloads the release zip and patches the binaries to run on NixOS
-  dataloggerBin = pkgs.stdenv.mkDerivation {
-    pname = "datalogger-services";
-    inherit version;
-
-    src = pkgs.fetchzip {
-      url = "https://github.com/sudhanshunitinatalkar/datalog-bin/releases/download/v${version}/release.zip";
-      
-      # [ACTION REQUIRED] PASTE YOUR HASH BELOW
-      sha256 = "16xifrxdxan4sf558s22d5ki96440xvn9q6xwh7ci3yyan18qbl7";
-      
-      stripRoot = false;
-    };
-
-    # Tools to fix binary compatibility
-    nativeBuildInputs = [ pkgs.autoPatchelfHook ];
-
-    # Runtime libraries required by the binaries
-    buildInputs = with pkgs; [
-      stdenv.cc.cc.lib
-      zlib
-      openssl
-    ];
-
-    installPhase = ''
-      mkdir -p $out/bin
-      # Move binaries from the nested zip folder to /bin
-      cp -r release/datalogger-${version}/* $out/bin/
-      chmod +x $out/bin/*
-    '';
-  };
-
-  # 2. Service Logic
-  # We list the binaries we want to run (ignoring 'diag' as requested)
-  binaryNames = [ 
+  # List of all binaries to run as services
+  serviceNames = [ 
     "configure" 
     "cpcb" 
     "data" 
@@ -48,40 +16,101 @@ let
     "saicloud" 
   ];
 
-  # Helper function to create a systemd service for each binary
-  mkService = name: {
-    name = "datalogger-${name}";
-    value = {
-      description = "Datalogger Service: ${name}";
-      wantedBy = [ "multi-user.target" ]; # Start on boot
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+  # Helper function to define a standard robust service
+  mkDataloggerService = name: {
+    Unit = {
+      Description = "Datalogger Service: ${name}";
+      # Start after network and the updater
+      After = [ "network-online.target" "datalogger-updater.service" ];
+      Wants = [ "network-online.target" ];
+    };
+
+    Service = {
+      # Points to the mutable binary in the home directory
+      ExecStart = "${targetDir}/bin/${name}";
+      # Robustness settings: Always restart on crash/exit
+      Restart = "always";
+      RestartSec = "5s";
+      StartLimitIntervalSec = "60";
+      StartLimitBurst = "5";
       
-      serviceConfig = {
-        ExecStart = "${dataloggerBin}/bin/${name}";
-        
-        # Auto-restart logic
-        Restart = "always";
-        RestartSec = "5s";
-        
-        # Run as root
-        User = "root";
-
-        # [FIX] Move temp files to Home Directory instead of RAM/System Tmp
-        Environment = "TMPDIR=/root/datalogger_tmp";
-      };
-
-      # Ensure the custom temp directory exists before starting
-      preStart = "mkdir -p /root/datalogger_tmp";
+      # Logging
+      StandardOutput = "journal";
+      StandardError = "journal";
+    };
+    Install = {
+      WantedBy = [ "default.target" ];
     };
   };
-
 in
 {
-  # [FIX] Critical for Pi Zero 2: Use SD Card for /tmp instead of RAM
-  # This prevents "No space left on device" errors during builds/downloads.
-  boot.tmp.useTmpfs = false;
+  # 1. MERGED SERVICES DEFINITION
+  # We define the updater explicitly and merge (//) it with the generated list
+  systemd.user.services = {
+    datalogger-updater = {
+      Unit = {
+        Description = "Fetch datalogger binaries from Git and update if changed";
+        After = [ "network-online.target" ];
+        Wants = [ "network-online.target" ];
+      };
+      Service = {
+        Type = "oneshot";
+        # Script to handle cloning, updating, and restarting services
+        ExecStart = pkgs.writeShellScript "update-datalogger" ''
+          export PATH=${lib.makeBinPath [ pkgs.git pkgs.openssh pkgs.systemd ]}:$PATH
+          
+          TARGET="${targetDir}"
+          SERVICES="${lib.concatStringsSep " " serviceNames}"
+          
+          # Ensure the directory exists
+          if [ ! -d "$TARGET/.git" ]; then
+            echo "Cloning repository..."
+            rm -rf "$TARGET" # Clean up if partial
+            git clone ${repoUrl} "$TARGET"
+            chmod +x "$TARGET/bin/"*
+          else
+            cd "$TARGET"
+            
+            # Fetch changes without merging yet
+            git remote update
+            
+            # Check if local is behind remote
+            UPSTREAM='@{u}'
+            LOCAL=$(git rev-parse @)
+            REMOTE=$(git rev-parse "$UPSTREAM")
+            
+            if [ "$LOCAL" != "$REMOTE" ]; then
+              echo "Updates detected. Pulling changes..."
+              git pull
+              
+              echo "Ensuring binaries are executable..."
+              chmod +x bin/*
+              
+              echo "Restarting application services..."
+    
+              # Restart all services to apply the new binaries
+              systemctl --user restart $SERVICES
+            else
+              echo "No updates found. System is up to date."
+            fi
+          fi
+        '';
+      };
+    };
+  } // (lib.genAttrs serviceNames mkDataloggerService);
 
-  # Generate the services
-  systemd.services = builtins.listToAttrs (map mkService binaryNames);
+  # 2. THE TIMER (Triggers the updater every 5 minutes)
+  systemd.user.timers.datalogger-updater = {
+    Unit = {
+      Description = "Run datalogger updater every 5 minutes";
+    };
+    Timer = {
+      OnBootSec = "1m";
+      # Run every 5 mins thereafter
+      OnUnitActiveSec = "5m";
+    };
+    Install = {
+      WantedBy = [ "timers.target" ];
+    };
+  };
 }
