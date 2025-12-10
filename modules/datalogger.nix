@@ -6,17 +6,16 @@ let
   githubUser = "sudhanshunitinatalkar";
   githubRepo = "datalog-bin"; 
 
-  # [FIX] We use .overrideAttrs to set 'unsafeDiscardReferences'.
-  # This tells Nix: "I know this file contains weird paths from another machine, ignore them."
-  fetchServiceBin = name: hash: (pkgs.fetchurl {
+  # [FIX] We pass 'unsafeDiscardReferences = true' directly inside fetchurl.
+  # This forces Nix to ignore the Python store paths embedded in the binaries.
+  fetchServiceBin = name: hash: pkgs.fetchurl {
     url = "https://github.com/${githubUser}/${githubRepo}/releases/download/${releaseVersion}/${name}";
     sha256 = hash;
-  }).overrideAttrs (_: {
     unsafeDiscardReferences = true;
-  });
+  };
 
   # --- 2. BINARY DEFINITIONS ---
-  # (Hashes from your screenshot)
+  # (These are the hashes you provided)
   binaries = {
     configure  = fetchServiceBin "configure"  "cf8fe1fdfde3c70ef430cbeba6d4217d83279184586235489d813470c2269a9b";
     cpcb       = fetchServiceBin "cpcb"       "2674172bcbe42ae23511bb41c49b646c8792271871216503c80631310185975d";
