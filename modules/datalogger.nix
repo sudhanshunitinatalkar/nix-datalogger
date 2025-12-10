@@ -7,8 +7,7 @@ let
   githubRepo = "datalog-bin"; 
 
   # --- 2. THE PACKAGE BUILDER ---
-  # This downloads the binary and runs 'nuke-refs' to remove "foreign" 
-  # store paths (fixing the 'fixed output derivation' error).
+  # Downloads the binary and nukes references to foreign store paths.
   fetchAndNuke = name: hash: pkgs.runCommand name {
     outputHashMode = "flat";
     outputHashAlgo = "sha256";
@@ -16,15 +15,12 @@ let
     
     nativeBuildInputs = [ pkgs.curl pkgs.nukeReferences ];
   } ''
-    # 1. Download the binary
     curl -L -k "https://github.com/${githubUser}/${githubRepo}/releases/download/${releaseVersion}/${name}" -o $out
-    
-    # 2. Nuke References (Scrub foreign paths so Nix accepts the file)
     nuke-refs $out
   '';
 
   # --- 3. BINARY DEFINITIONS ---
-  # [UPDATED] Using the nuked hashes you just generated
+  # (Using the 'nuked' hashes you generated earlier)
   binaries = {
     configure  = fetchAndNuke "configure"  "0avbaayd0a3aidp465ngl0xnb1x473ylspx09j6c5xwx10wqf163";
     cpcb       = fetchAndNuke "cpcb"       "1k3xb4cww3hlilwvgljcba9d05n31x9qi8m04vh89l6p8pypbpay";
@@ -50,8 +46,6 @@ let
 
     Service = {
       ExecStart = "${binDir}/${name}";
-      
-      # Use our custom temp dir so we don't fill up RAM (/tmp)
       Environment = "TMPDIR=${tmpDir}";
 
       Restart = "always";
@@ -75,7 +69,6 @@ in
     mkdir -p "${binDir}"
     mkdir -p "${tmpDir}"
 
-    # Get the dynamic loader path for THIS specific Pi
     INTERPRETER="$(cat ${pkgs.stdenv.cc}/nix-support/dynamic-linker)"
     echo "Using System Loader: $INTERPRETER"
 
@@ -84,13 +77,15 @@ in
       SRC=$2
       DEST="${binDir}/$NAME"
 
-      # Only update if file is missing or changed
       if [ ! -f "$DEST" ] || [ "$(sha256sum $DEST | cut -d' ' -f1)" != "$(sha256sum $SRC | cut -d' ' -f1)" ]; then
         echo "--> Updating $NAME..."
+        rm -f "$DEST"
         cp "$SRC" "$DEST"
+        
+        # [FIX] Explicitly add WRITE permissions so patchelf works
+        chmod u+w "$DEST"
         chmod +x "$DEST"
         
-        # Patch the binary to run on this system
         ${pkgs.patchelf}/bin/patchelf --set-interpreter "$INTERPRETER" "$DEST"
         echo "    (Patched successfully)"
       else
